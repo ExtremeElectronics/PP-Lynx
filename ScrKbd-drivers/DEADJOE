@@ -1,0 +1,40 @@
+
+*** These modified files were found in JOE when it aborted on Mon Nov 28 00:58:17 2022
+*** JOE was aborted because the terminal closed
+
+*** File '(Unnamed)'
+i2c_block
+screensize_x
+screensize_y
+lineBuffWidth
+
+*** File '(Unnamed)'
+{
+}
+init
+fwx
+font
+default
+charTxtXY(
+csr
+charTxtXY(
+usb
+
+*** File '(Unnamed)'
+screen.c
+screen.c
+screen.c
+screen.c
+screen.c
+RC2040.c
+RC2040.c
+screen.c
+screen.c
+font8x8.h
+font8x8box.h
+
+*** File '* Startup Log *'
+Processing '/etc/joe/joerc'...
+Processing '/etc/joe/ftyperc'...
+Finished processing /etc/joe/ftyperc
+Finished processing /etc/joe/joerc
