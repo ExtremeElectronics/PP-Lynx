@@ -27,6 +27,8 @@ Z80 Emulation via EtchedPixels z80 emulation kit  https://github.com/EtchedPixel
 
 To run on the PicoPuter kit Available (soon) from extkits.co.uk
 
+Running programs in the TAP format are in the SD directory, for more info see the readme there. 
+
 #Function Keys 
 F1 - load taps file from SD
 F9 - Z80 reset
