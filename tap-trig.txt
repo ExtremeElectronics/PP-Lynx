@@ -1,0 +1,5 @@
+if((Port & 0xff)==0x93)//trap for SAVE routine
+	{
+		save_lynx_tap();
+	}
+

@@ -37,4 +37,8 @@ void GFX_printf(const char *format, ...);
 void GFX_flush();
 
 void GFX_WriteBitmap(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t *bitmap);
+
+void printString(char * s);
+void printStringXY(char* s,int x,int y);
+void printchar(char c);
 #endif

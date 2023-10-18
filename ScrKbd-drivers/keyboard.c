@@ -5,13 +5,14 @@
 #include "keyboard.h"
 #include "ScanCodes.h"
 
+#include "gfx/gfx.h"
+
+//keyboard hardware
 #define PICO_I2C_SDA_PIN 8
 #define PICO_I2C_SCL_PIN 9
-
 #define i2c_block i2c0
-
+//i2c kbd address
 #define kbd_port 32
-
 
 ////0 normal 1=shift, 2=ctrl, 3=func, 4=alt
 #define normal 0
@@ -33,9 +34,9 @@ char repeatcnt=0;
 
 #define kbdbuffmax 100
 
-char kbdbuff[kbdbuffmax];
-int kbdptrout=0;
-int kbdptrin=0;
+volatile kbdbuff[kbdbuffmax];
+volatile int kbdptrout=0;
+volatile int kbdptrin=0;
 
 uint8_t KbdCaps=0;
 
@@ -67,6 +68,7 @@ char testKbdGetCharWaiting(void){
     if (kbdptrin!=kbdptrout){
         c=kbdbuff[kbdptrout];
     }
+    return c;
 }
 
 //adds key to buffer
@@ -108,11 +110,10 @@ uint16_t scanForKey(void){
 
       txdata[0]=0x14; //PortA output Latches
       txdata[1]=~x; //port a value
-      i2c_write_blocking(i2c_block, kbd_port,&txdata,2,false);
-
+      if(i2c_write_blocking(i2c_block, kbd_port,&txdata,2,false)==PICO_ERROR_GENERIC) printf("Kbderror1\n");
       txdata[0]=0x13; //port b input
-      i2c_write_blocking(i2c_block, kbd_port,&txdata,1,true);
-      i2c_read_blocking(i2c_block, kbd_port,&rxdata,1,false);
+      if(i2c_write_blocking(i2c_block, kbd_port,&txdata,1,true)==PICO_ERROR_GENERIC) printf("Kbderror2\n");
+      if(i2c_read_blocking(i2c_block, kbd_port,&rxdata,1,false)==PICO_ERROR_GENERIC) printf("Kbderror3\n");
       //port b 0-7 bits keyboard. last bit caps light
       rxdata[0]=rxdata[0] & 0x7f;
       if (rxdata[0]!=0x7f){
@@ -225,9 +226,7 @@ void keyboardProcess(void){
     }  
 }
 
-
-                  
-
+              
 void kbd_init(int poll){
     printf("KBD init");
 
@@ -240,7 +239,6 @@ void kbd_init(int poll){
     gpio_set_function(PICO_I2C_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(PICO_I2C_SDA_PIN);
     gpio_pull_up(PICO_I2C_SCL_PIN);
-
     
     txdata[0]=0; //Reg 0 - DIRA
     txdata[1]=0; //direction outputs
@@ -251,15 +249,15 @@ void kbd_init(int poll){
     i2c_write_blocking(i2c_block, kbd_port,&txdata,2,false);
 
     txdata[0]=0x0d; //Reg 1 - Pullups B
-//    txdata[1]=0xff; //all pulled up
     txdata[1]=0x7f; //all inputs except Caps LED
     i2c_write_blocking(i2c_block, kbd_port,&txdata,2,false);
 
     printf("Setup Done\n\r");
     
 //start scan interrupt
-    int uf=kbdscantimeus;
     if (!poll){
+        printf(" kbd polling \n");
+        int uf=kbdscantimeus;
         if(add_repeating_timer_us(-uf, kbd_repeating_timer_callback, NULL, &kbd_timer)){
            printf("KBD Timer Started\n\r");
         }
@@ -273,4 +271,37 @@ char scanForKeyBlocking(){
 //  printf("k%i",c);  
   return c;
 }
+
+
+void EmptyKbdBuffer(void){
+  kbdptrin=kbdptrout;
+}
+
+char WaitForKey(void){
+    while(kbdptrin==kbdptrout){
+      sleep_ms(20);
+    }
+    return kbdGetCharWaiting();;
+
+}
+
+int ReadUntilCr(char * inbuff){
+    inbuff[0]=0;
+    char c=0;
+    int cnt=0;
+    while(c!=0x0d && cnt!=sizeof(inbuff)-1)
+    {
+      c=WaitForKey();    
+      inbuff[cnt]=c;
+      if(c>31) printchar(c);
+//      printf("%s",c);
+      cnt++;
+    }
+    inbuff[cnt]=0; //remove cr
+    return cnt-1;
+}
+
+
+
+
 

@@ -20,11 +20,11 @@
         z80dis.c 
 #        acia.c
         hw_config.c
-        dictionary.c
-	iniparser.c
-	ScrKbd-drivers/lscreen.c
+#        dictionary.c
+#	iniparser.c
+#	ScrKbd-drivers/lscreen.c
         ScrKbd-drivers/keyboard.c
-
+	taps.c
 
   )
 
@@ -65,3 +65,4 @@
   add_compile_definitions(PICO_STDIO_USB_ENABLE_RESET_VIA_VENDOR_INTERFACE=0)
 
 
+#set_property(GLOBAL [i]name[/i]APPEND_STRING PROPERTY LINK_FLAGS "-Wl,--print-memory-usage")

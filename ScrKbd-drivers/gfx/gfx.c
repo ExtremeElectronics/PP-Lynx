@@ -412,16 +412,31 @@ void GFX_drawCircle(int16_t x0, int16_t y0, int16_t r,
 	}
 }
 
-char printBuf[100];
-void printString(char s[])
+void printStringXY(char* s,int x,int y)
+{       int i;
+	uint8_t n = strlen(s);
+	for (i = 0; i < n; i++)
+//		GFX_write(s[i]);
+		 GFX_drawChar(x+i*6, y, s[i], textcolor,textbgcolor, textsize_x, textsize_y);
+	cursor_x=x+i*6;
+	cursor_y=y;	 
+}
+
+void printchar(char c){
+       GFX_drawChar(cursor_x, cursor_y, c, textcolor,textbgcolor, textsize_x, textsize_y);
+       cursor_x=cursor_x+6;
+}
+
+void printString(char* s)
 {
 	uint8_t n = strlen(s);
-	for (int i = 0; i < n; i++)
+	for (int i = 0; s[i]>0; i++)
 		GFX_write(s[i]);
 }
 
 void GFX_printf(const char *format, ...)
 {
+        char printBuf[100];
 	va_list args;
 	va_start(args, format);
 	vsprintf(printBuf, format, args);

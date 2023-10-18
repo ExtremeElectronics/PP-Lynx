@@ -20,19 +20,7 @@
 #include "pico/multicore.h"
 #include "hardware/pwm.h"
 
-//iniparcer
-#include "dictionary.h"
-#include "iniparser.h"
-
-
-//sd card reader
-#include "f_util.h"
-#include "ff.h"
-#include "pico/stdlib.h"
-//
-#include "hw_config.h"
-
-
+//C headers
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -45,50 +33,72 @@
 #include <tusb.h>
 #include "system.h"
 #include "libz80/z80.h"
+#include <malloc.h>
 
+//Z80 emu headers
 #include "z80dma.h"
 #include "z80dis.h"
 #include "ctype.h"
 
-//#define enable_disks 1
+//sd card reader
+#include "f_util.h"
+#include "ff.h"
+#include "hw_config.h"
+
 
 //ide file handles
 FIL fili;
 FIL fild;
 
-
-//2 pages of RAM/ROM for PICO
-#define USERAM 1
-#define USEROM 0
-
 //sound 
-
 #define HIGH 1
 #define LOW 0
 
 //Lynx keyboard
 #include "keys.h"
 unsigned char keymap[256];
+//kbd state
+extern uint8_t kbdstate[16]; //from keyboard.c
+
+#define FKEY1 1
+#define FKEY2 2
+#define FKEY3 3
+#define FKEY4 4
+#define FKEY5 5
+#define FKEY6 6
+#define FKEY7 7
+#define FKEY8 8
+#define FKEY9 9
+#define FKEY10 10
+
+//OSD / TAP
+#define OSDMAXLINES 15
+#define MAXTAPFILES 80
+#define MAXFILELEN 40
+char filenames[MAXTAPFILES*(MAXFILELEN+1)];
+
+//real keyboard
+#include "ScrKbd-drivers/keyboard.h"
 
 //screen
-#include "ScrKbd-drivers/lscreen.h"
 #include "ScrKbd-drivers/gfx/gfx.h"
 #include "ScrKbd-drivers/ili9341/ili9341.h"
 
 #define USEBUFFER 1
-uint16_t screenbuffer[256*128];
+#define DMALINES 60 //16K screen cache screen refreshed in 4 lots
+#define SCREENOFFSET 16 //offset from the left 32 to center screen
+uint16_t screenbuffer[256*DMALINES];
 
+uint8_t InOSD=0;
 
-//must be pins on the same slice
-
+//Sound
 #define SPEAKER_PINa 6
 #define SPEAKER_PINb 7
-//#define soundIO1 7
-//#define soundIO2 7
-//#define PWMrate 90
+//stop speaker
+//#define SP_QUIET true
 
-//uint PWMslice;
-
+//TAPS
+#include "taps.h"
 
 //watch
 uint16_t watch= 0x0000;
@@ -107,13 +117,16 @@ bool run_debug = false;
 
 //sd disk
 #include "paledisk.h"
+int SD_OK=0;
 
+//Lynx Memory
+uint8_t *bank1;
+uint8_t *bank2;
+uint8_t *bank3;
 
-byte *bank1;
-byte *bank2;
-byte *bank3;
-byte *diskbuf;
-//uint16_t *tftmem;
+uint8_t *diskbuf;
+
+//IO ports state
 byte z80ports_in[16];
 
 int interruptfps = 0;
@@ -133,14 +146,6 @@ bool stop_z80 =true;
 int speed_mult=1;
 
 
-//max files for ls on SD card.
-#define MaxBinFiles 100
-char BinFiles[MaxBinFiles];
-
-//IDE
-static int ide =1; //set to 1 to init IDE
-struct ide_controller *ide0;
-
 /* Real UART setup*/
 #define UART_ID uart0
 #define BAUD_RATE 115200
@@ -158,7 +163,7 @@ int hasusbcharwaiting=0;
 
 
 //serial in circular buffer
-#define INBUFFERSIZE 10000
+#define INBUFFERSIZE 1024
 //static char charbufferUART[INBUFFERSIZE];
 //#static int charinUART=0;
 //static int charoutUART=0;
@@ -174,35 +179,15 @@ static int charoutUSB=0;
 //interupts
 int int_recalc=0;
 
-//PIO
-//int PIOA=0;
-//uint8_t PIOAp[]={16,17,18,19,20,21,26,27};
-
 //PICO GPIO
 // use regular LED (gpio 25 most likly)
 const uint LEDPIN = PICO_DEFAULT_LED_PIN;
 
-//const uint HASSwitchesIO =22;
-//
-//int HasSwitches=0;
-//
-
-//ROM Address Switches
-//const uint ROMA13 = 10;
-//const uint ROMA14 = 11;
-//const uint ROMA15 = 12;
-
-//serial selection
-//const uint SERSEL = 13;
-
-//buttons
-//const uint DUMPBUT =9;
-//const uint AUXBUT =8;
-//const uint RESETBUT =7;
-
 //LED
-const uint PCBLED =6;
+#define  PCBLED 6
 
+//
+#define TEST_BUTTON 17
 
 /* use stdio for errors via usb uart */
 
@@ -266,16 +251,13 @@ static unsigned int nbytes;
 static void z80_vardump(void)
 {
 	static uint32_t lastpc = -1;
-//	char buf[256];
 
 	nbytes = 0;
 
 	lastpc = cpu_z80.M1PC;
 	printf( "%04X: ", lastpc);
-//	z80_disasm(buf, lastpc);
 	while(nbytes++ < 6)
 		printf( "   ");
-//	printf( "%-16s ", buf);
 	printf( "[ %02X:%02X %04X %04X %04X %04X %04X %04X ]\n",
 		cpu_z80.R1.br.A, cpu_z80.R1.br.F,
 		cpu_z80.R1.wr.BC, cpu_z80.R1.wr.DE, cpu_z80.R1.wr.HL,
@@ -476,6 +458,31 @@ char getUSBcharwaiting(void){
   return c;
 }
 
+
+// calculate memory left
+
+uint32_t getTotalHeap(void) {
+   extern char __StackLimit, __bss_end__;
+   
+   return &__StackLimit  - &__bss_end__;
+}
+
+uint32_t getFreeHeap(void) {
+   struct mallinfo m = mallinfo();
+
+   return getTotalHeap() - m.uordblks;
+}
+
+
+void ShowMem(){
+  printf("\n\n\r MEMORY \n");   
+  printf("FreeHeap %6X %iK \n", getFreeHeap(), getFreeHeap()/1024);
+  printf("TotalHeap %6X %iK \n", getTotalHeap(),getTotalHeap()/1024);
+
+  printf("\n\n");
+}
+
+
 /*
 // experimental UART char in circular buffer rx via USB interrupt
 void intUARTcharwaiting(void){
@@ -515,12 +522,12 @@ char getUARTcharwaiting(void){
 
 
 
-
+/*
 void recalc_interrupts(void)
 {
 	int_recalc = 1;
 }
-
+*/
 
 
 
@@ -528,7 +535,7 @@ void recalc_interrupts(void)
  *	Interrupts. We don't handle IM2 yet.
  */
 
-
+//replace Aduino bitWrite
 void bitWrite(uint8_t x, char n, char value) {
    if (value)
       x |= (1 << n);
@@ -536,10 +543,9 @@ void bitWrite(uint8_t x, char n, char value) {
       x &= ~(1 << n);
 }
 
+
 /* LYNX Keyboard Emulation */
-
-//from Z80IO.cpp 
-
+//from ESP32 PALE Z80IO.cpp 
 void k_delay(int del);
 
 void pump_key(char k)
@@ -733,7 +739,6 @@ void k_delay(int del)
   //in future check in the keyboard buffer on the ynx that they key gets there
   
   for(int f=0;f<del;f++)
-     //  execz80(1000);
       Z80ExecuteTStates(&cpu_z80, (10000));
 
   // Clear all keypresses
@@ -751,8 +756,7 @@ void k_delay(int del)
   //Make sure the keypress is recognised
   //in future check in the keyboard buffer on the ynx that they key gets there
   for(int f=0;f<del;f++)
-//     execz80(1000);
-    Z80ExecuteTStates(&cpu_z80, (10000)); 
+     Z80ExecuteTStates(&cpu_z80, (10000)); 
 }
 
 void patchrom()
@@ -768,9 +772,7 @@ void patchrom()
   lynxrom[0xcd4]=0xed;  //change Read Bit, just return 1 in A
   lynxrom[0xcd5]=0x01;
   lynxrom[0xcd6]=0xc9;
-//  lynxrom[0xcd4]=0xc3;  //change Read Bit, just return 1 in A
-//  lynxrom[0xcd5]=0xd4;
-//  lynxrom[0xcd6]=0x0c;
+
   lynxrom[0xc95]=0xc3;  //setup an infint loop to wait here whilst VB is loading the RAM
   lynxrom[0xc96]=0x95;
   lynxrom[0xc97]=0x0c;
@@ -798,52 +800,10 @@ void patchrom()
 
 }
 
-/*
-
-static void PIOA_init(void){
-//init gpio ports
-    int a;
-    for (a=0;a<8;a++){
-       gpio_init(PIOAp[a]);
-    }
-
-}
-
-static uint8_t PIOA_read(void){
-// set as inputs and read
-    int a;
-    uint8_t v=1;
-    uint8_t r=0;
-    //set pullups make input
-    for (a=0;a<8;a++){
-       gpio_set_dir(PIOAp[a],GPIO_IN);
-       gpio_pull_up(PIOAp[a]);
-    }
-    sleep_us(200);
-    //get bits disable pullups
-    for (a=0;a<8;a++){   
-       if(gpio_get(PIOAp[a]))r=r+v;
-       gpio_disable_pulls(PIOAp[a]);
-       v=v << 1;
-    }
-    return r;
-
-}
-
-static void PIOA_write(uint8_t val){
-//set as outputs and write
-  int a;
-  uint8_t v=1;
-  for (a=0;a<8;a++){
-    gpio_set_dir(PIOAp[a],GPIO_OUT);
-    gpio_put(PIOAp[a],v & val); 
-    v=v << 1;
-  }
-
-}
-*/
 
 void toggle_speaker(){
+
+#ifndef SP_QUIET
   if(gpio_get(SPEAKER_PINb)){
             gpio_put(SPEAKER_PINa,HIGH);
             gpio_put(SPEAKER_PINb,LOW);
@@ -852,15 +812,27 @@ void toggle_speaker(){
             gpio_put(SPEAKER_PINb,HIGH);
         }
 
+#endif
 
-}
+  }
 
+
+
+//######################################### IO WRITE #################################
 
 void io_write(int unused, uint16_t Port, uint8_t Value)
 {
-	 Port = Port & 0xFF;
+  Port = Port & 0xFF;
   switch (Port) 
   {
+    case 0x7E://printer data reg
+    {
+      //printf("%X",Value);
+      putchar(Value);
+      sleep_ms(1);
+      break;
+    }
+  
     case 0x7F:
     {
       bank_latch = Value;
@@ -875,9 +847,6 @@ void io_write(int unused, uint16_t Port, uint8_t Value)
     case 0x80:
     {
       speaker_enable = Value & 0x01;
-//      digitalWrite(SPEAKER_PIN,speaker_enable);
-//      gpio_put(SPEAKER_PIN,speaker_enable);
-//      toggle_speaker();
       video_latch = Value;
       if ((Value & 0x40) && Line_Blank==0)  //FIXME synch with video draw
       {   //Line Blanking monostable - freezes z80 till next scanline end
@@ -887,10 +856,19 @@ void io_write(int unused, uint16_t Port, uint8_t Value)
       
       break;
     }
+    case 0x82:
+    {
+       //serial out
+       printf("%X",Value);
+      //putchar(Value);
+      sleep_ms(100);
+      break;
+    }
     case 0x84:
     {
       if(speaker_enable == 1)
       {
+#ifndef SP_QUIET
         if(Value > 32){
 //            digitalWrite(SPEAKER_PIN,HIGH);
             gpio_put(SPEAKER_PINa,HIGH);
@@ -899,9 +877,24 @@ void io_write(int unused, uint16_t Port, uint8_t Value)
 //            digitalWrite(SPEAKER_PIN,LOW);
             gpio_put(SPEAKER_PINa,LOW);
             gpio_put(SPEAKER_PINb,HIGH);
-        }
+        }    
+#endif
+      }else{
+          gpio_put(SPEAKER_PINa,LOW);
+          gpio_put(SPEAKER_PINb,LOW);
       }
+      break;
     }
+    case 0x93:
+    {
+        if(Value == 0x22){
+          // needs to stop spurious triggerting ?
+          printf("Save Routine %X\n",Value);
+          save_lynx_tap(&cpu_z80);
+       }
+       break;
+    }
+    
   }
 #ifdef enable_disks
   if((Port & 0xf0) == 0x50)
@@ -910,8 +903,21 @@ void io_write(int unused, uint16_t Port, uint8_t Value)
   
 }
 
+
+//############################# IO READ ###############################
+
 uint8_t io_read(int unused, uint16_t Port)
 {
+  if((Port & 0x00ff)  == 0x007c){
+    //return printer status
+    return (3); // assert sel and error
+  }
+  
+  if((Port & 0x00ff) == 0x0084){
+    //serial in
+    return(0);
+  }
+
   if((Port & 0x00ff)  == 0x0080)
   {
     int16_t kbdportvalmasked = (Port & 0x0f00);
@@ -958,137 +964,17 @@ void flash_led(int t){
 }
 
 
-
-/*
-void WriteRamromToSd(FRESULT fr,char * filename,int writesize,int readfromram){
-    if (readfromram){
-      printf("\n##### Writing %s to SD from RAM for %04x bytes #####\n\r",filename,writesize);
-    }else{
-      printf("\n##### Writing %s to SD from ROM for %04x bytes #####\n\r",filename,writesize);
-    }
-    FIL fil;
-    fr = f_open(&fil, filename, FA_WRITE | FA_OPEN_APPEND);
-    if (FR_OK != fr && FR_EXIST != fr){
-        panic("\nf_open(%s) error: %s (%d)\n", filename, FRESULT_str(fr), fr);
-    }else{
-      int a;
-      char c;
-      UINT bw;
-      for(a=0;a<writesize;a++){
-        printf("%02x ",ram[a]);
-        if (readfromram){
-          c=ram[a];
-        }else{
-          c=rom[a];
-        }
-        fr= f_write(&fil, &c, sizeof c, &bw);
-      }
-    }
-    fr = f_close(&fil);
-}
-*/
-
-/*
-void ReadSdToRamrom(FRESULT fr,const char * filename,int readsize,int SDoffset,int writetoram ){
-    FIL fil;
-    fr = f_open(&fil, filename, FA_READ); //FA_WRITE
-    if (FR_OK != fr && FR_EXIST != fr){
-        panic("\nf_open(%s) error: %s (%d)\n", filename, FRESULT_str(fr), fr);
-    }else{
-      fr = f_lseek(&fil, SDoffset);
-
-      int a;
-      char c;
-      UINT br;
-      for(a=0;a<readsize;a++){
-        fr = f_read(&fil, &c, sizeof c, &br);
-        if (br==0){printf("Read Fail");}
-        if(writetoram){
-          ram[a]=c;
-        }else{
-          rom[a]=c;
-        }
-      }
-
-    }
-    fr = f_close(&fil);
-
-}
-*/
-/*
-void WriteRamToSD(FRESULT fr,const char * filename,int readsize ){
-    char temp[128];
-    sprintf(temp,"\n###### Writing %s to SD from RAM  for %04x bytes#####\n\r",filename,readsize);
-    PrintToSelected(temp,1);
-    FIL fil;
-    fr = f_open(&fil, filename, FA_WRITE | FA_CREATE_ALWAYS); //FA_WRITE
-    if (FR_OK != fr && FR_EXIST != fr){
-        panic("\nf_open(%s) error: %s (%d)\n", filename, FRESULT_str(fr), fr);
-    }else{
-
-      int a;
-      char c;
-      UINT bw;
-      for(a=0;a<readsize;a++){
-        c=ram[a];
-        fr = f_write(&fil, &c, sizeof c, &bw);
-        if (bw==0){printf("Write Fail");}
-      }
-
-    }
-    fr = f_close(&fil);
+void screenInit(){
+    LCD_initDisplay();
+    LCD_setRotation(1);//normal
+//    LCD_setRotation(3); //upside down
+    GFX_setClearColor(0);
+    GFX_clearScreen();
 
 }
 
 
-void CopyRamRom2Ram(int FromAddr, int ToAddr, int copysize, int fromram, int toram){
-    int a;
-    for(a=0;a<copysize;a++){
-      if(fromram){
-        if(toram){
-          ram[a+ToAddr]=ram[a+FromAddr];
-        }else{
-          ram[a+ToAddr]=rom[a+FromAddr];
-        }
-      }else{
-        if(toram){
-          rom[a+ToAddr]=ram[a+FromAddr];
-        }else{
-          rom[a+ToAddr]=rom[a+FromAddr];
-        }
-      }
-    }
-}
 
-
-void DumpRamRom(unsigned int FromAddr, int dumpsize,int dram){
-  int rc=0;
-  int a;
-  if(dram){
-    printf("RAM %04X ",FromAddr);
-  }else{
-    printf("ROM %04X ",FromAddr);
-  }
-  for(a=0;a<dumpsize;a++){
-    if (dram){
-      printf("%02x ",ram[a+FromAddr]);
-    }else{
-      printf("%02x ",rom[a+FromAddr]);
-    }
-      rc++;
-
-      if(rc % 32==0){
-        printf("\nR-M %04x ",rc+FromAddr);
-      }else{
-        if (rc % 8==0){
-          printf(" ");
-        }
-      }
-  }
-
-}
-
-*/
 
 
 
@@ -1132,15 +1018,13 @@ void DumpScreen(byte * bank,int dumpsize,int FromAddr,int rowwidth){
 
 #ifdef USEBUFFER
 
-
-void DumpHalfScreenToLCD(int startline){
+void DumpBufferedScreenToLCD(int startline,int lines){
       int memcnt=0;
-      for (int lin = 0;lin < 120;lin++)
+      for (int lin = 0;lin < lines;lin++)
       {
         int16_t coladdr = 0;
         for(int col = 0;col < 32;col++)
         {
-//          uint16_t bytaddr =  (lin+startline) * 32 + col;  //startlinebyteaddr +
           uint16_t bytaddr =  (lin+startline+4) * 32 + col;  //startlinebyteaddr +
           byte redbyte = bank2[bytaddr + 0x2000];
           byte bluebyte = bank2[bytaddr];
@@ -1164,49 +1048,19 @@ void DumpHalfScreenToLCD(int startline){
           }
         }
       }
-
-      LCD_WriteBitmap(0, startline,256,120, screenbuffer);
+      // write to screen ofset to center
+      LCD_WriteBitmap(SCREENOFFSET, startline,256,lines, screenbuffer);
 
 
 }
 
 
 void DumpScreenToLCD(){
-    DumpHalfScreenToLCD(0);
-    DumpHalfScreenToLCD(120);
-
-/*      int memcnt=0;
-      for (int lin = 0;lin < 248;lin++)
-      {
-        int16_t coladdr = 0;
-        for(int col = 0;col < 32;col++)
-        {
-          uint16_t bytaddr =  lin * 32 + col;  //startlinebyteaddr +
-          byte redbyte = bank2[bytaddr + 0x2000];
-          byte bluebyte = bank2[bytaddr];
-          byte greenbyte = bank3[bytaddr + 0x2000];
-          for(int bb = 0;bb < 8;bb++)
-          {
-            char dored = 0;
-            char dogreen = 0;
-            char doblue = 0;
-
-            byte bitpos = (0x80 >> bb);
-            if(show_redblue || ((video_latch & 0x04) == 0))     // emulate level 9 video show banks from video latch
-            {
-              if((redbyte & bitpos) != 0)  dored = 255;
-              if((bluebyte & bitpos) != 0) doblue = 255;
-            }
-            if((greenbyte & bitpos) != 0) dogreen = 255;
-
-            screenbuffer[memcnt]=GFX_RGB565(dored,dogreen,doblue);
-            memcnt++;
-          }
-        }
+      int y;
+      for(y=0;y<240;y+=DMALINES){
+        DumpBufferedScreenToLCD(y,DMALINES);
       }
 
-      LCD_WriteBitmap(0, 0,256,256, screenbuffer);
-*/      
 }
 
 
@@ -1253,201 +1107,6 @@ void DumpScreenToLCD(){
 
 
 
-//dumpmemory to USB for serial dump command
-/*
-void DumpMemoryUSB(unsigned int FromAddr, int dumpsize){
-    int rc=0;
-    int a;
-    const unsigned char width=16;
-    unsigned char c;
-    char string[width+1];
-    string[width]=0;
-    printf("%04X ",FromAddr);
-    for(a=0;a<dumpsize;a++){
-       c=mem_read0(a+FromAddr);
-       printf("%02x ",c);
-       string[rc % width]='.';
-       if ((c>=' ') && (c<='~')) string[rc % width ]=c;
-       rc++;
-       if(rc % width==0){
-           printf(" %s ",string);
-           printf("\r\n%04X ",rc+FromAddr);
-       }else{
-           if (rc % 8==0){
-              printf(" ");
-           }
-       }
-    }
-
-}
-
-
-// dump memory image to console and sd if fr is set
-void DumpMemory(unsigned int FromAddr, int dumpsize,FRESULT fr){
-  int rc=0;
-  int a;
-  char temp[128];
-  if(romdisable){
-        sprintf(temp,"\n\rROM Disabled\n\r");
-        PrintToSelected(temp,0);
-  }else{
-        sprintf(temp,"\n\rROM Enabled\n\r");
-        PrintToSelected(temp,0);
-  }
-  sprintf(temp,"MEM %04X ",FromAddr);
-  PrintToSelected(temp,0);
-  if (fr!=0) WriteRamToSD(fr,"DUMP.BIN",0x10000 );
-  for(a=0;a<dumpsize;a++){
-      sprintf(temp,"%02x ",mem_read0(a+FromAddr));
-      PrintToSelected(temp,0);
-      rc++;
-
-      if(rc % 32==0){
-        sprintf(temp,"\r\nMEM %04x ",rc+FromAddr);
-        PrintToSelected(temp,0);
-      }else{
-        if (rc % 8==0){
-          sprintf(temp," ");
-          PrintToSelected(temp,0);
-        }
-      }
-  }
-
-}
-*/
-
-int sdls(const char *dir,const char * search) {
-    int filecnt=0;
-    char cwdbuf[FF_LFN_BUF] = {0};
-    FRESULT fr; /* Return value */
-    char const *p_dir;
-    if (dir[0]) {
-        p_dir = dir;
-    } else {
-        fr = f_getcwd(cwdbuf, sizeof cwdbuf);
-        if (FR_OK != fr) {
-            printf("f_getcwd error: %s (%d)\n", FRESULT_str(fr), fr);
-            return 0;
-        }
-        p_dir = cwdbuf;
-    }
-    printf("%s files %s\n",search, p_dir);
-    DIR dj;      /* Directory object */
-    FILINFO fno; /* File information */
-    memset(&dj, 0, sizeof dj);
-    memset(&fno, 0, sizeof fno);
-    fr = f_findfirst(&dj, &fno, p_dir, search);
-    if (FR_OK != fr) {
-        printf("f_findfirst error: %s (%d)\n", FRESULT_str(fr), fr);
-        return 0;
-    }
-    while (fr == FR_OK && fno.fname[0]) { /* Repeat while an item is found */
-        /* Create a string that includes the file name, the file size and the
-         attributes string. */
-        const char *pcWritableFile = "writable file",
-                   *pcReadOnlyFile = "read only file",
-                   *pcDirectory = "directory";
-        const char *pcAttrib;
-        /* Point pcAttrib to a string that describes the file. */
-        if (fno.fattrib & AM_DIR) {
-            pcAttrib = pcDirectory;
-        } else if (fno.fattrib & AM_RDO) {
-            pcAttrib = pcReadOnlyFile;
-        } else {
-            pcAttrib = pcWritableFile;
-        }
-        /* Create a string that includes the file name, the file size and the
-         attributes string. */
-        printf("%i) %s [%s] [size=%llu]\n", filecnt+1, fno.fname, pcAttrib, fno.fsize);
-        if (filecnt<MaxBinFiles){
-          sprintf(&BinFiles[filecnt],"%s",fno.fname);
-          filecnt++;
-        }
-        fr = f_findnext(&dj, &fno); /* Search for next item */
-    }
-    f_closedir(&dj);
-    return filecnt++;
-}
-
-/*
-int GetRomSwitches(){
-  gpio_init(HASSwitchesIO); 
-  gpio_set_dir(HASSwitchesIO,GPIO_IN);
-  gpio_pull_up(HASSwitchesIO);
-
-  gpio_init(ROMA13);
-  gpio_set_dir(ROMA13,GPIO_IN);
-  gpio_pull_up(ROMA13);
-  
-  gpio_init(ROMA14);
-  gpio_set_dir(ROMA14,GPIO_IN);
-  gpio_pull_up(ROMA14);
-  
-  gpio_init(ROMA15);
-  gpio_set_dir(ROMA15,GPIO_IN);
-  gpio_pull_up(ROMA15);
-
-//serial port selection swithch
-  gpio_init(SERSEL);
-  gpio_set_dir(SERSEL,GPIO_IN);
-  gpio_pull_up(SERSEL);
-
-  sleep_ms(1); //wait for io to settle.
-
-  int v=0;
-  if (gpio_get(HASSwitchesIO)==1){
-    PrintToSelected("\r\nNo Switches, no settings changed \n\r",1);
-    HasSwitches=0;
-  }else{
-
-    if (gpio_get(SERSEL)==1){
-        UseUsb=1;
-        PrintToSelected("Console Via USB  \n\r",1);
-    }else{
-        UseUsb=0;
-        PrintToSelected("Console Via UART \n\r",1);
-    }
-
-
-//if has switches, then it has buttons and an LED too.
-
-//setup DUMP gpio
-    gpio_init(DUMPBUT);
-    gpio_set_dir(DUMPBUT,GPIO_IN);
-    gpio_pull_up(DUMPBUT);
-
-//setup RESETBUT gpio
-    gpio_init(RESETBUT);
-    gpio_set_dir(RESETBUT,GPIO_IN);
-    gpio_pull_up(RESETBUT);
-
-//setup AUXBUT gpio
-    gpio_init(AUXBUT);
-    gpio_set_dir(AUXBUT,GPIO_IN);
-    gpio_pull_up(AUXBUT);
-
-//setup PCBLED
-    gpio_init(PCBLED);
-    gpio_set_dir(PCBLED,GPIO_OUT);
-
-
-
-
-
-  }
-  return rombank;
-
-}
-*/
-
-int SDFileExists(char * filename){
-    FRESULT fr;
-    FILINFO fno;
-
-    fr = f_stat(filename, &fno);
-    return fr==FR_OK;
-}
-
 
 //############################################################################################################
 //################################################# Sound ####################################################
@@ -1462,43 +1121,181 @@ void init_sound(){
 }
 
 
-/*
-void SetPWM(void){
-    gpio_init(soundIO1);
-    gpio_set_dir(soundIO1,GPIO_OUT);
-    gpio_set_function(soundIO1, GPIO_FUNC_PWM);
+//############################################################################################################
+//################################################# OSD ####################################################
+//############################################################################################################
 
-    gpio_init(soundIO2);
-    gpio_set_dir(soundIO2,GPIO_OUT);
-    gpio_set_function(soundIO2, GPIO_FUNC_PWM);
 
-    PWMslice=pwm_gpio_to_slice_num (soundIO1);
-    pwm_set_clkdiv(PWMslice,16);
-    pwm_set_both_levels(PWMslice,0x80,0x80);
-
-    pwm_set_output_polarity(PWMslice,true,false);
-
-    pwm_set_wrap (PWMslice, 256);
-    pwm_set_enabled(PWMslice,true);
-
-}
-*/
-/*
-void Beep(uint8_t note){
-    int w;     
-    //set frequency    
-    pwm_set_clkdiv(PWMslice,256);
-    if (note>0 && note<128){
-      //get divisor from Midi note table.
-      w=MidiNoteWrap[note];  
-      pwm_set_both_levels(PWMslice,w>>1,w>>1);
-      //set frequency from midi note table.
-      pwm_set_wrap(PWMslice,w);
-    }else{
-      pwm_set_both_levels(PWMslice,0x0,0x0);  
+int sdlsTap(const char *dir,const char * search) {
+    char linebuf[100];
+    int filecnt=0,linecnt=0;
+    char cwdbuf[FF_LFN_BUF] = {0};
+    FRESULT fr; // Return value 
+    char const *p_dir;
+    if (dir[0]) {
+        p_dir = dir;
+    } else {
+        fr = f_getcwd(cwdbuf, sizeof cwdbuf);
+        if (FR_OK != fr) {
+            printf("f_getcwd error: %s (%d)\n", FRESULT_str(fr), fr);
+            return 0;
+        }
+        p_dir = cwdbuf;
     }
+    printf("%s files %s\n",search, p_dir);
+    DIR dj;      // Directory object 
+    FILINFO fno; // File information 
+    memset(&dj, 0, sizeof dj);
+    memset(&fno, 0, sizeof fno);
+    printf("Find first dir:%s search%s\n",p_dir, search);
+    fr = f_findfirst(&dj, &fno, p_dir, search);
+    if (FR_OK != fr) {
+        printf("f_findfirst error: %s (%d)\n", FRESULT_str(fr), fr);
+        return 0;
+    }
+    while (fr == FR_OK && fno.fname[0] && filecnt!=MAXTAPFILES) { /// Repeat while an item is found 
+        if (fno.fattrib & AM_DIR) {
+//            pcAttrib = pcDirectory;
+        } else{
+           printf("%2i) %s \n", filecnt+1, fno.fname);
+           snprintf(linebuf,sizeof(linebuf),"%i) %s ", filecnt+1, fno.fname);
+           linebuf[41]=0; //crop string
+           printStringXY(linebuf,24,linecnt*10);
+           snprintf(&filenames[filecnt*MAXFILELEN],MAXFILELEN,"%s",fno.fname);
+           filecnt++;
+           linecnt++;
+           if (linecnt==OSDMAXLINES){
+               snprintf(linebuf,sizeof(linebuf),"  More .... ");
+               printStringXY(linebuf,24,linecnt*10+20);
+               while(testKbdGetCharWaiting()==0);
+                
+               GFX_clearScreen();
+               linecnt=0;
+               sleep_ms(300); //must be longer than kbd scan 
+               kbdGetCharWaiting();
+           }
+        }
+        fr = f_findnext(&dj, &fno); // Search for next item 
+        if(fr!=FR_OK) printf("Find next error %s (%d)\n",FRESULT_str(fr), fr);
+    }
+    f_closedir(&dj);
+    return filecnt++;
 }
-*/
+
+
+int sdls(const char *dir,const char * search) {
+    int filecnt=0;
+    char cwdbuf[FF_LFN_BUF] = {0};
+    FRESULT fr; // Return value 
+    char const *p_dir;
+        
+    if (dir[0]) {
+        p_dir = dir;
+    } else {
+        fr = f_getcwd(cwdbuf, sizeof cwdbuf);
+        if (FR_OK != fr) {
+            printf("f_getcwd error: %s (%d)\n", FRESULT_str(fr), fr);
+            return 0;
+        }
+        p_dir = cwdbuf;
+    }
+    printf("%s files %s\n",search, p_dir);
+    DIR dj;      // Directory object 
+    FILINFO fno; // File information 
+    memset(&dj, 0, sizeof dj);
+    memset(&fno, 0, sizeof fno);
+    fr = f_findfirst(&dj, &fno, p_dir, search);
+    if (FR_OK != fr) {
+        printf("f_findfirst error: %s (%d)\n", FRESULT_str(fr), fr);
+        return 0;
+    }
+    while (fr == FR_OK && fno.fname[0]) { /// Repeat while an item is found 
+        // Create a string that includes the file name, the file size and the
+         //attributes string. 
+        const char *pcWritableFile = "writable file",
+                   *pcReadOnlyFile = "read only file",
+                   *pcDirectory = "directory";
+        const char *pcAttrib;
+        // Point pcAttrib to a string that describes the file. 
+        if (fno.fattrib & AM_DIR) {
+            pcAttrib = pcDirectory;
+        } else if (fno.fattrib & AM_RDO) {
+            pcAttrib = pcReadOnlyFile;
+        } else {
+            pcAttrib = pcWritableFile;
+        }
+        // Create a string that includes the file name, the file size and the
+        // attributes string. 
+        printf("%i) %s [%s] [size=%llu]\n", filecnt+1, fno.fname, pcAttrib, fno.fsize);
+        //if (filecnt<MaxBinFiles){
+      //    sprintf(&BinFiles[filecnt],"%s",fno.fname);
+        filecnt++;
+        //}
+        fr = f_findnext(&dj, &fno); // Search for next item 
+    }
+    f_closedir(&dj);
+    return filecnt++;
+}
+
+
+
+int SDFileExists(char * filename){
+    FRESULT fr;
+    FILINFO fno;
+
+    fr = f_stat(filename, &fno);
+    return fr==FR_OK;
+}
+
+
+
+void DoLoadTap(void){
+    printf("OSD load\n");
+    //clear screen
+    char inbuff[5];
+    InOSD=1;
+    int files=0;
+    int answer=0,a=0;
+    char filename[MAXFILELEN+1];
+    printf("Filename space allocated\n");
+    sleep_ms(500);
+    char c;
+    FRESULT fr; 
+    GFX_setClearColor(0);
+    GFX_clearScreen();
+    ShowMem();
+    printf("FN storage %ik\n",sizeof(filenames)/1024);
+    files=sdlsTap("/","*.tap");
+    printStringXY("Choose ?, 999 to escape ",24,200);    
+    sleep_ms(200);
+    while((answer>=files && answer!=999) || answer==0){
+       ReadUntilCr(inbuff);    
+       printf("inbuff %s\n",inbuff);
+       sscanf(inbuff,"%d", &answer);  
+    }
+    if (answer>0){
+      answer--;
+      while(c=filenames[answer*MAXFILELEN]!=0 && a<MAXFILELEN){
+        filename[a]=filenames[answer*MAXFILELEN+a];
+        a++;
+      }
+      filename[a]=0;
+      printf("Loading %i) %s\n",answer+1,filename);
+      
+      printStringXY("Loading ...            ",24,200);
+      load_lynx_tap(fr, (char *) filename,0,&cpu_z80);
+    
+    //while(kbdstate[FKEY1]){
+      //DoOSD
+       
+    //}
+      InOSD=0;
+   }
+}
+
+
+
+
 
 
 
@@ -1509,20 +1306,35 @@ void Beep(uint8_t note){
 //############################################################################################################
 
 void Core1Main(void){
-
+  int cnt=0;
   printf("\n#Core 1 Starting#\n");
 
+  printf("Kbd init\n");
+  kbd_init(1); //poll
+
    while(1){
-     DumpScreenToLCD();
-     //sleep_ms(100);
-     
-   
+     if(InOSD==0){
+       DumpScreenToLCD();
+     }else{
+       sleep_ms(50);
+     }
+     //check keys
+     keyboardProcess();
+
+     cnt++;
+     if(cnt>200){
+        cnt=0;
+        printf(".\n");
+     }
+
      tight_loop_contents();
     
    }  
 
 }
 
+
+//############################################ UART ###################
 
 void init_pico_uart(void){
     // Set up our UART with a basic baud rate.
@@ -1730,7 +1542,13 @@ void do_keyboard()
 /* #################### SD Card and DISK ######################### */
 
 
+
+
 #ifdef SD_ENABLED
+
+
+//needs converting to FF
+
 void listDir(fs::FS &fs, const char * dirname, uint8_t levels){
     printf(f("Listing directory: %s\n", dirname);
 
@@ -1862,10 +1680,7 @@ int main(int argc, char *argv[])
 	
 	int indev;
 	char *patha = NULL, *pathb = NULL;
-        char temp[250];
 	
-//        char RomTitle[200];
-        
 //over clock done in ini parcer now
         set_sys_clock_khz(250000, true);
 
@@ -1891,96 +1706,30 @@ init_sound();
         if (FR_OK != fr){
             // panic("f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
             printf("SD INIT FAIL  \n\r");
-            while(1); //halt
-        }
-
-        printf("SD INIT OK \n\r");
-
-
-
-
-// inifile parse
-	dictionary * ini ;
-	char       * ini_name ;
-        const char  *   s ;
-        const char * inidesc;
-                
-        int overclock;
-        int jpc;
-        int iscf=0;
-
-       	ini_name = "rc2040.ini";
-
-	if (SDFileExists(ini_name)){
-	  sprintf("Ini file %s Exists Loading ... \n\r",ini_name);
-
-//########################################### INI Parser ######################################		
-	  ini = iniparser_load(fr, ini_name);
-	  //iniparser_dump(ini, stdout);
-
-	  // start at
-	  jpc = iniparser_getint(ini, "ROM:jumpto", 0);
-
-          // Use Ide
-	  ide = iniparser_getint(ini, "IDE:ide",1);
-	  
-	  // IDE cf file
-//	  iscf = iniparser_getint(ini, "IDE:iscf", iscf);
-	  
-//	  idepathi = iniparser_getstring(ini, "IDE:idefilei", "");
-//	  idepath = iniparser_getstring(ini, "IDE:idefile", idepath);
-	  
-	  // USB or UART
-//	  UseUsb = iniparser_getint(ini, "CONSOLE:port", 1);
-
-          // ININAME
-          inidesc = iniparser_getstring(ini, "EMULATION:inidesc","Default ini" );
-          printf("INI Description: %s \n\r",inidesc,1);
-
-          // Trace enable from inifile
-	  trace = iniparser_getint(ini, "DEBUG:trace",0 );
-	  watch = iniparser_getint(ini, "DEBUG:watch",0 );
-
-	  // PORT
-
-
-          // Overclock
-	  overclock = iniparser_getint(ini, "SPEED:overclock",0 );
-	  if (overclock>0){
-	        printf("Overclock to %i000\n\r",overclock,1);
-	  	set_sys_clock_khz(overclock*1000, true);
-          }
-
-	  //iniparser_freedict(ini); // cant free, settings are pointed to dictionary.
-
-	  printf("Loaded INI\n\r",1);	
-
-//########################################### End of INI Parser ###########################
-
-
-//IF switches link present, get switches and select rom bank and UART from switches
-/*
-          if (overridejumpers==0){
-            rombank=GetRomSwitches();
-          }else{
-            printf("Override jumpers set in INI \n\r");
-          }  
-*/                 
+            SD_OK=0;
+//            while(1); //halt
         }else{
-            uart_puts(UART_ID,"No  \n\r");
-            printf("SD INIT OK \n\r",1);
-        }
+           SD_OK=1;
+           printf("SD INIT OK \n\r");
+        } 
 
-        flash_led(200);
+//TEST_BUTTON
+
+     gpio_init(TEST_BUTTON);
+     gpio_set_dir(TEST_BUTTON,GPIO_IN);
+     gpio_pull_up(TEST_BUTTON);
+
+     flash_led(200);
         
-        printf("\rWaiting for USB to connect\n\r",1);
-        //if usb wait for usb to connect.
-        while (!tud_cdc_connected()) { sleep_ms(100);  }
+     printf("\rWaiting for USB to connect\n\r",1);
+     //if usb wait for usb to connect.
+//     while (!tud_cdc_connected()) { sleep_ms(100);  }
 
 //compiled time
-	printf("\n\rCompiled %s %s\n",__DATE__,__TIME__);
+     printf("\n\rCompiled %s %s\n",__DATE__,__TIME__);
 
-// ALLOCATE MEMORY
+     printf("\n\rAllocate Lynx Memory Banks \n");
+// ALLOCATE Lynx MEMORY
 //
     bank1 = (byte *)malloc(65536);
     if(bank1 == NULL){
@@ -2005,12 +1754,9 @@ init_sound();
     open_working_disk(1); // loads jd1.ldf disk from sd card  
 #endif
 
-//patc rom
+//patch Lynx  rom
 patchrom();
         
-//init PIO
-//    if(PIOA<256) PIOA_init();
-
 //init linyx keyboard ports
 // make sure keyboard ports are FF
     for(int t = 0;t < 16;t++)
@@ -2023,76 +1769,56 @@ patchrom();
   printf("init Screen");
 
 //banner
-        printf( "\n\r     ________________________________");
-        printf( "\n\r    /                                |");
-        printf( "\n\r   /            PLYNX                |");
-        printf( "\n\r  /         Derek Woodroffe          |");
-        printf( "\n\r |  O        Extreme Kits            |");
-        printf( "\n\r |     Kits at extkits.uk/PLYNX      |");
-        printf( "\n\r |               2023                |");
-        printf( "\n\r |___________________________________|");
-        printf( "\n\r   | | | | | | | | | | | | | | | | |  \n\n\r");
+        printf( "\n\r __________________________________________");
+        printf( "\n\r|                                          |");
+        printf( "\n\r|                            _____         |");
+        printf( "\n\r|  PLYNX              _____ |     |        |");
+        printf( "\n\r|  (PicoLynx)        |     ||     |        |");
+        printf( "\n\r|                    |     ||_____| _____  |");
+        printf( "\n\r|                    |_____|       |     | |");
+        printf( "\n\r|  Extreme Kits  _____             |     | |");
+        printf( "\n\r|               |     |  _________ |_____| |");
+        printf( "\n\r|               |     | |         |        |");
+        printf( "\n\r|               |_____| |         |        |");
+        printf( "\n\r|  Kits at              |         |        |");
+        printf( "\n\r|  xtkits.uk/PLYNX      |         |        |");
+        printf( "\n\r|  2023                 |_________|        |");
+        printf( "\n\r|                                          |");
+        printf( "\n\r|__________________________________________|");
+        printf( "\n\r                                         \n\n\r");
 
 //init Emulation
 
 //Start Core1
         multicore_launch_core1(Core1Main);
         printf("\n#Core 1 Started#\n\n");
+
+//
+        ShowMem();
         
 //Init Z80
-	tc.tv_sec = 0;
-	tc.tv_nsec = 20000000L;
-	int stop_z80=0;
-	int screendumpcounter=999999;
+//	tc.tv_sec = 0;
+//	tc.tv_nsec = 20000000L;
+//	int stop_z80=0;
 
 	Z80RESET(&cpu_z80);
-	//nonstandard start vector
-	if(jpc){
-	    cpu_z80.PC=jpc;
-            printf("Starting at 0x%04X \n\r",jpc);
-	}
 	
 	cpu_z80.ioRead = io_read;
 	cpu_z80.ioWrite = io_write;
 	cpu_z80.memRead = mem_read;
 	cpu_z80.memWrite = mem_write;
-	cpu_z80.trace = z80_trace;
+	//cpu_z80.trace = z80_trace;
 
 	printf("\r\n ########################################\n\r",0);
-	printf(" ###########  PLYNX STARTING  ###########\n\r",0);
+        printf(" ####### PLYNX EMULATION STARTING #######\n\r",0);
 	printf(" ########################################\n\n\r",0);
 
-	/* This is the wrong way to do it but it's easier for the moment. We
-	   should track how much real time has occurred and try to keep cycle
-	   matched with that. The scheme here works fine except when the host
-	   is loaded though */
 
-	  
+//Start Emulation
 
-
-	/* We run 7372000 t-states per second */
-	/* We run 365 cycles per I/O check, do that 50 times then poll the
-	   slow stuff*/
 	while (!emulator_done) {
 		int i;
-		/* 36400 T states for base RC2014 - varies for others */
-/*                if(HasSwitches){       
-	            if(gpio_get(DUMPBUT)==0){
-                        DumpMemory(0,0x10000,fr);
-                        while(gpio_get(DUMPBUT)==0);
-                    }
 
-                    if(gpio_get(RESETBUT)==0) {
-                        printf("\r\n ########################### \n\r");
-                        printf(" ####### Z80 RESET ######### \n\r");
-                        printf(" ########################### \n\n\r");
-			z80_vardump();                        
-                        Z80RESET(&cpu_z80);
-                        while(gpio_get(RESETBUT)==0);
-                    }                    
-
-                }
-*/
 		for (i = 0; i < 40; i++) {  //origional
 		    int j;
 		    for (j = 0; j < 50; j++) { Z80ExecuteTStates(&cpu_z80, (tstate_steps + 5)/ 10);	}
@@ -2103,28 +1829,37 @@ patchrom();
 		   char c=getUSBcharwaiting();
 		   putchar(c); //echo
 	           pump_key(c);
-	        }	  
+	        }
 	        
-//	        screendumpcounter++;
-//	        if (screendumpcounter>100){
-//	            printf("\n----------------ScreenDump-----------------\n");
-//	            DumpScreen(bank2,20*42,0x120,0x20);
-//	            DumpScreenToLCD();
-//	            screendumpcounter=0;
-//	        }	
+	        if(testKbdCharWaiting()){
+	           char c=kbdGetCharWaiting();
+	           putchar(c); //echo/debug
+	           pump_key(c);
+	        }
+	        	  
+                if(kbdstate[FKEY2]){
+  	           sdls("/","*.*");	  
+	           kbdstate[FKEY2]=0;
+                }
+	  
+	        //Turn on OSD Load Tap
+	        if(kbdstate[FKEY1]){
+	          DoLoadTap();
+	          kbdstate[FKEY1]=0;
+	        }
+
+	        if(kbdstate[FKEY3]){
+	          ShowMem();
+	          kbdstate[FKEY3]=0;
+	        }
 	        
-		if (int_recalc) {
-			/* If there is no pending Z80 vector IRQ but we think
-			   there now might be one we use the same logic as for
-			   reti */
-			if (!live_irq )
-				poll_irq_event();
-			/* Clear this after because reti_event may set the
-			   flags to indicate there is more happening. We will
-			   pick up the next state changes on the reti if so */
-			if (!(cpu_z80.IFF1|cpu_z80.IFF2))
-				int_recalc = 0;
-		}
+	        //Reset Z80
+	        if(kbdstate[FKEY9]){
+	          printf("Z80 RESET\n");
+	          Z80RESET(&cpu_z80);
+	          kbdstate[FKEY9]=0;
+	        }  
+		
 	}
 }
 
