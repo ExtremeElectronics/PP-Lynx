@@ -1,4 +1,5 @@
 PICO LYNX EMULATION
+````
 ____________________________________________
 |                                          |
 |                            _____         |
@@ -15,6 +16,7 @@ ____________________________________________
 |  2023                 |_________|        |
 |                                          |
 |__________________________________________|
+```
 
 A port (mostly) of the EPS32 PALE Emulator by Charles Peter Debenham Todd   https://github.com/retrogubbins/PaleESP32VGA
 
