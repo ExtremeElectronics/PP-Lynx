@@ -30,8 +30,14 @@ To run on the PicoPuter kit Available (soon) from extkits.co.uk
 Running programs in the TAP format are in the SD directory, for more info see the readme there. 
 
 #Function Keys 
-F1 - load taps file from SD
-F9 - Z80 reset
+F1 - Escape
+F2 - load taps file from SD
+F9 - Z80 reset (only)
 
 Current setup in a 3D printed case. 
 ![421b32f81baee515](https://github.com/ExtremeElectronics/PP-Lynx/assets/102665314/4a728921-2a83-44ab-8db5-c439b738eea2)
+
+## ToDo 
+Errors on file load/save (file still loads/saves, but console get an error)
+Disk support (may need more memory than the Pico has) 
+
