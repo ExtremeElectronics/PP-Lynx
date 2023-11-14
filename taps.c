@@ -277,7 +277,7 @@ void save_lynx_tap(Z80Context* ctx)
 		lbuffer[0]='"';
 		for(f=1;f<e2;f++)
 		{
-				lbuffer[f]=plab[f];		
+   		    lbuffer[f]=plab[f];		
 		}
 		end_nam=f;
 		lbuffer[end_nam]='"';
@@ -290,29 +290,36 @@ void save_lynx_tap(Z80Context* ctx)
 		lbuffer[end_nam+2]=tap_leng % 256;
 		lbuffer[end_nam+3]=tap_leng / 256;
 		//write Prog
+		printf("Writing to %s for %X bytes\n",pnam, tap_leng);
 		csum=0;
 		int save_size=0;
-		int save_address=end_nam+4;
+		int save_address=0;
+		f_write(& handle2, lbuffer,end_nam+4,&size_written );
+                printf("  written to file for %X bytes\n",size_written );
+
 		for(f=0;f<tap_leng;f++)
 		{
    		   lbuffer[save_address]=bank1[start_address+f];
    		   save_address++;
 		   if(save_size==TAPSBUFFSIZE){
 		     f_write(& handle2, lbuffer,save_size,&size_written );
-		     printf("Written address %X to file for %X bytes",save_address,save_size);
-		     save_address=save_address-save_size;
+		     printf("  written address %X to file for %X bytes\n",save_address,save_size);
+		     save_address=save_address+save_size;
 		     save_size=0;
 		   }else{
 		     save_size++;
 	           }			
 		}
-	        
-		lbuffer[save_address++]=0;		//exec addr
-		lbuffer[save_address++]=0;
-		lbuffer[save_address++]=0;	//copy byte
-                save_size+=3;
+		if(save_size!=0){
+		   f_write(& handle2, lbuffer,save_size,&size_written );
+                   printf("   written last address %X to file for %X bytes\n",save_address,save_size);
+	        }
+		lbuffer[0]=0;		//exec addr
+		lbuffer[1]=0;
+		lbuffer[2]=0;	//copy byte
+                save_size=3;
    	        f_write(& handle2, lbuffer,save_size,&size_written );
-   	        printf("Written address %X to file for %X bytes",save_address,save_size);
+   	        printf("   written last address %X to file for %X bytes\n",save_address,save_size);
 
 		//e2=get_ix();
 		e2=ctx->R1.wr.IX;

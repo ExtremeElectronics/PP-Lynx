@@ -70,6 +70,7 @@ extern uint8_t kbdstate[16]; //from keyboard.c
 #define FKEY8 8
 #define FKEY9 9
 #define FKEY10 10
+#define FCAPS 15
 
 //OSD / TAP
 #define OSDMAXLINES 15
@@ -182,6 +183,16 @@ int int_recalc=0;
 //PICO GPIO
 // use regular LED (gpio 25 most likly)
 const uint LEDPIN = PICO_DEFAULT_LED_PIN;
+
+
+//PIO
+int PIOA=0;
+//straight
+//uint8_t PIOAp[]={16,17,18,19,20,21,26,27};
+//to match joystick
+//uint8_t PIOAp[]={19,17,18,21,20,16,26,27};
+//               up down left right dfa fire
+uint8_t PIOAp[]={26,17,  18,  21,   27, 20  ,16,19};
 
 //LED
 #define  PCBLED 6
@@ -483,59 +494,8 @@ void ShowMem(){
 }
 
 
-/*
-// experimental UART char in circular buffer rx via USB interrupt
-void intUARTcharwaiting(void){
-//   char c = getchar_timeout_us(0); 
-    while (uart_is_readable(UART_ID)) {
-        char c =uart_getc(UART_ID);
-        charbufferUART[charinUART]=c;
-        charinUART++;
-        if (charinUART==INBUFFERSIZE){
-            charinUART=0;
-        }
-    }
-}
 
-//char waiting test is inbuff=outbuffer?
-int testUARTcharwaiting(){
-      return charinUART!=charoutUART;
-}
-
-char getUARTcharwaiting(void){
-    char c=0;
-    if(charinUART!=charoutUART){
-        c=charbufferUART[charoutUART];
-        charoutUART++;
-        if (charoutUART==INBUFFERSIZE){
-            charoutUART=0;
-        }
-
-    }else{
-        printf("UART Buffer underrun");
-    }
-  return c;
-
-}
-*/
-
-
-
-
-/*
-void recalc_interrupts(void)
-{
-	int_recalc = 1;
-}
-*/
-
-
-
-/*
- *	Interrupts. We don't handle IM2 yet.
- */
-
-//replace Aduino bitWrite
+//replace Aduino bitWrite used in kbd routines
 void bitWrite(uint8_t x, char n, char value) {
    if (value)
       x |= (1 << n);
@@ -552,16 +512,29 @@ void pump_key(char k)
 {
   int f;
  
+//caps lock
 //  if key[SDLK_CAPSLOCK]) z80ports_in[0x0080] &= 0xF7;
-  if (k == 0x83){ z80ports_in[0] &= 0xEF; k_delay(4); return;}
-  if (k == 0x81){ z80ports_in[0] &= 0xDF; k_delay(4); return;}
-  if  (k == 0x80){z80ports_in[9] &= 0xFB; k_delay(4); return;}
-  if  (k == 0x82){z80ports_in[9] &= 0xDF; k_delay(4); return;}
-//  if key[SDLK_ESCAPE]) z80ports_in[0x0080] &= 0xBF;
+  if (kbdstate[FCAPS]) z80ports_in[0] &= 0xF7; //0 or port 80 ?
+  
+  if (k == 0x83){z80ports_in[0] &= 0xEF; k_delay(4); return;}
+  if (k == 0x81){z80ports_in[0] &= 0xDF; k_delay(4); return;}
+  if (k == 0x80){z80ports_in[9] &= 0xFB; k_delay(4); return;}
+  if (k == 0x82){z80ports_in[9] &= 0xDF; k_delay(4); return;}
+
+  //escape
+  if (kbdstate[FKEY1]){
+     printf("Escape\n");
+     z80ports_in[0] &= 0xBF; //0 or port 80 not sure which
+     k_delay(4);
+     kbdstate[FKEY1]=0;
+  }
+
 //  if ((key[SDLK_RSHIFT]) || (key[SDLK_LSHIFT])) z80ports_in[0x0080] &= 0x7F;
 
-
-    k=tolower (k);
+  if(k>='a' && k<='z'){
+    z80ports_in[0] &= 0x7F; //shift
+  }
+  k=tolower (k);
      
   // Real Keyboard Table        
   if (k=='1') z80ports_in[0] &= 0xFE;
@@ -712,7 +685,6 @@ void pump_key(char k)
 // Does this work? gives a n amperrsand
 //  if (k=='@') z80ports_in[0x0580] &= 0xEF;
 
-
   if (k=='@') z80ports_in[8] &= 0xFD;
   if (k=='\\')
   {
@@ -739,7 +711,7 @@ void k_delay(int del)
   //in future check in the keyboard buffer on the ynx that they key gets there
   
   for(int f=0;f<del;f++)
-      Z80ExecuteTStates(&cpu_z80, (10000));
+      Z80ExecuteTStates(&cpu_z80, (20000));
 
   // Clear all keypresses
   z80ports_in[0] = 0xFF;
@@ -756,7 +728,7 @@ void k_delay(int del)
   //Make sure the keypress is recognised
   //in future check in the keyboard buffer on the ynx that they key gets there
   for(int f=0;f<del;f++)
-     Z80ExecuteTStates(&cpu_z80, (10000)); 
+     Z80ExecuteTStates(&cpu_z80, (20000)); 
 }
 
 void patchrom()
@@ -805,12 +777,12 @@ void toggle_speaker(){
 
 #ifndef SP_QUIET
   if(gpio_get(SPEAKER_PINb)){
-            gpio_put(SPEAKER_PINa,HIGH);
-            gpio_put(SPEAKER_PINb,LOW);
-        }else{
-            gpio_put(SPEAKER_PINa,LOW);
-            gpio_put(SPEAKER_PINb,HIGH);
-        }
+      gpio_put(SPEAKER_PINa,HIGH);
+      gpio_put(SPEAKER_PINb,LOW);
+  }else{
+      gpio_put(SPEAKER_PINa,LOW);
+      gpio_put(SPEAKER_PINb,HIGH);
+  }
 
 #endif
 
@@ -841,7 +813,6 @@ void io_write(int unused, uint16_t Port, uint8_t Value)
 //    if ((value & 0x40)==0x40)     //READ 2 & 3 Enable 
 //        update_vid_maps96k();
       
-      
       break;
     }
     case 0x80:
@@ -850,8 +821,8 @@ void io_write(int unused, uint16_t Port, uint8_t Value)
       video_latch = Value;
       if ((Value & 0x40) && Line_Blank==0)  //FIXME synch with video draw
       {   //Line Blanking monostable - freezes z80 till next scanline end
-          Line_Blank=1;
-          stop_z80 = true;
+          //Line_Blank=1;
+          //stop_z80 = true;
       }  
       
       break;
@@ -861,7 +832,7 @@ void io_write(int unused, uint16_t Port, uint8_t Value)
        //serial out
        printf("%X",Value);
       //putchar(Value);
-      sleep_ms(100);
+      sleep_ms(10);
       break;
     }
     case 0x84:
@@ -904,6 +875,37 @@ void io_write(int unused, uint16_t Port, uint8_t Value)
 }
 
 
+//################################################################
+//##################### PIO/JSTK port #################################
+//################################################################
+
+static void PIOA_init(void){
+//init gpio ports
+    int a;
+    for (a=0;a<8;a++){
+       gpio_init(PIOAp[a]);
+       gpio_set_dir(PIOAp[a],GPIO_IN);
+       gpio_pull_up(PIOAp[a]);
+    }
+
+}
+
+static uint8_t PIOA_read(void){
+// set as inputs and read
+    int a;
+    uint8_t v=1;
+    uint8_t r=0;
+    //get bits disable pullups
+    for (a=0;a<8;a++){
+       if(gpio_get(PIOAp[a]))r=r+v;
+       v=v << 1;
+    }
+    return r;
+
+}
+
+
+
 //############################# IO READ ###############################
 
 uint8_t io_read(int unused, uint16_t Port)
@@ -929,6 +931,11 @@ uint8_t io_read(int unused, uint16_t Port)
     if((Port & 0xf0)==0x50)
       return(disk_inp(Port));
 #endif
+  
+  //Joystick
+  if((Port & 0x00ff)  == 0x007a){
+    return PIOA_read();
+  }
   
   return 0xff;
 }
@@ -1107,7 +1114,6 @@ void DumpScreenToLCD(){
 
 
 
-
 //############################################################################################################
 //################################################# Sound ####################################################
 //############################################################################################################
@@ -1227,10 +1233,7 @@ int sdls(const char *dir,const char * search) {
         // Create a string that includes the file name, the file size and the
         // attributes string. 
         printf("%i) %s [%s] [size=%llu]\n", filecnt+1, fno.fname, pcAttrib, fno.fsize);
-        //if (filecnt<MaxBinFiles){
-      //    sprintf(&BinFiles[filecnt],"%s",fno.fname);
         filecnt++;
-        //}
         fr = f_findnext(&dj, &fno); // Search for next item 
     }
     f_closedir(&dj);
@@ -1248,17 +1251,17 @@ int SDFileExists(char * filename){
 }
 
 
-
 void DoLoadTap(void){
     printf("OSD load\n");
     //clear screen
     char inbuff[5];
     InOSD=1;
+    //wait for screen to stop refereshing.
+    sleep_ms(500);
     int files=0;
     int answer=0,a=0;
     char filename[MAXFILELEN+1];
     printf("Filename space allocated\n");
-    sleep_ms(500);
     char c;
     FRESULT fr; 
     GFX_setClearColor(0);
@@ -1285,19 +1288,9 @@ void DoLoadTap(void){
       printStringXY("Loading ...            ",24,200);
       load_lynx_tap(fr, (char *) filename,0,&cpu_z80);
     
-    //while(kbdstate[FKEY1]){
-      //DoOSD
-       
-    //}
       InOSD=0;
    }
 }
-
-
-
-
-
-
 
 
 
@@ -1324,13 +1317,10 @@ void Core1Main(void){
      cnt++;
      if(cnt>200){
         cnt=0;
-        printf(".\n");
+        //printf(".");
      }
-
-     tight_loop_contents();
-    
+     tight_loop_contents();  
    }  
-
 }
 
 
@@ -1371,10 +1361,7 @@ void init_pico_uart(void){
 
 }
 
-
-
-
-
+/*
 void do_keyboard()
 {
     bitWrite(z80ports_in[0], 0, keymap[0x16]);
@@ -1456,19 +1443,22 @@ void do_keyboard()
 //      keymap[KEY_F1] = 1;
 //       //load_lynx_tap();
 //    }
-    if(keymap[KEY_F2] == 0)   // F2  key  Toggle Turbo speed
+*/
+/*
+    if(keymap[KEY_F4] == 0)   // F4  key  Toggle Turbo speed
     {
-       keymap[KEY_F2] = 1;
+       keymap[KEY_F4] = 1;
        if(speed_mult > 1)
             speed_mult = 1;
        else
             speed_mult = 16;
     } 
-    
-    if(keymap[KEY_F3] == 0)   // F3  key    Get System Info
-    {
+*/    
+//    if(keymap[KEY_F5] == 0)   // F5  key    Get System Info
+//    {
+
     /*
-      keymap[KEY_F3] = 1;
+      keymap[KEY_F5] = 1;
       printf(("Free Heap: ");
       printf(system_get_free_heap_size());
       printf(("vga free memory: ");
@@ -1482,7 +1472,7 @@ void do_keyboard()
         printf(("Free PSRAM: ");
       printf(ln(ESP.getFreePsram());
     */
-    }
+//    }
 
  
 /*
@@ -1535,7 +1525,7 @@ void do_keyboard()
     }    
 */
     
-}
+//}
 
 
 
@@ -1693,6 +1683,9 @@ int main(int argc, char *argv[])
                 
 // init sound
 init_sound();                
+
+//init pio
+PIOA_init();
                 
 //init uart
 //        init_pico_uart();
@@ -1736,18 +1729,21 @@ init_sound();
       printf("Failed to allocate Bank 1 memory");;
       while(1);
     }
+    for(int b=0;b<65536;b++)bank1[b]=0;
 
     bank2 = (byte *)malloc(16384);
     if(bank2 == NULL){
       printf("Failed to allocate Bank 2 memory");
       while(1);
     }
+    for(int b=0;b<16384;b++)bank2[b]=0;
 
     bank3 = (byte *)malloc(16384);
     if(bank3 == NULL){
       printf("Failed to allocate Bank 3 memory");
       while(1);
     }
+    for(int b=0;b<16384;b++)bank3[b]=0;
 
 #ifdef enable_disks
     init_disks(); 
@@ -1781,25 +1777,22 @@ patchrom();
         printf( "\n\r|               |     | |         |        |");
         printf( "\n\r|               |_____| |         |        |");
         printf( "\n\r|  Kits at              |         |        |");
-        printf( "\n\r|  xtkits.uk/PLYNX      |         |        |");
+        printf( "\n\r|  Extkits.uk/PLYNX     |         |        |");
         printf( "\n\r|  2023                 |_________|        |");
         printf( "\n\r|                                          |");
         printf( "\n\r|__________________________________________|");
         printf( "\n\r                                         \n\n\r");
-
-//init Emulation
 
 //Start Core1
         multicore_launch_core1(Core1Main);
         printf("\n#Core 1 Started#\n\n");
 
 //
-        ShowMem();
+//        ShowMem();
+
+//init Emulation
         
 //Init Z80
-//	tc.tv_sec = 0;
-//	tc.tv_nsec = 20000000L;
-//	int stop_z80=0;
 
 	Z80RESET(&cpu_z80);
 	
@@ -1817,47 +1810,51 @@ patchrom();
 //Start Emulation
 
 	while (!emulator_done) {
-		int i;
+//		int i;
 
-		for (i = 0; i < 40; i++) {  //origional
+//		for (i = 0; i < 40; i++) {  //origional
 		    int j;
 		    for (j = 0; j < 50; j++) { Z80ExecuteTStates(&cpu_z80, (tstate_steps + 5)/ 10);	}
-		}
+//		}
 		
 		//fake USB char in interrupts
 		if (intUSBcharwaiting()){
-		   char c=getUSBcharwaiting();
-		   putchar(c); //echo
-	           pump_key(c);
+		    char c=getUSBcharwaiting();
+		    putchar(c); //echo
+	            pump_key(c);
 	        }
 	        
 	        if(testKbdCharWaiting()){
-	           char c=kbdGetCharWaiting();
-	           putchar(c); //echo/debug
-	           pump_key(c);
+	            char c=kbdGetCharWaiting();
+	            putchar(c); //echo/debug
+	            pump_key(c);
 	        }
 	        	  
-                if(kbdstate[FKEY2]){
-  	           sdls("/","*.*");	  
-	           kbdstate[FKEY2]=0;
+                if(kbdstate[FKEY6]){  //dir if SD
+  	            sdls("/","*.*");	  
+	            kbdstate[FKEY6]=0;
                 }
-	  
+                if(kbdstate[FKEY1]){   //Escape
+                    pump_key('`');
+                    kbdstate[FKEY1]=0;
+                }
+                	  
 	        //Turn on OSD Load Tap
-	        if(kbdstate[FKEY1]){
-	          DoLoadTap();
-	          kbdstate[FKEY1]=0;
+	        if(kbdstate[FKEY2]){ //Load Tap file
+   	            DoLoadTap();
+	            kbdstate[FKEY2]=0;
 	        }
 
-	        if(kbdstate[FKEY3]){
-	          ShowMem();
-	          kbdstate[FKEY3]=0;
+	        if(kbdstate[FKEY3]){ //Show Memory
+	            ShowMem();
+	            kbdstate[FKEY3]=0;
 	        }
 	        
 	        //Reset Z80
 	        if(kbdstate[FKEY9]){
-	          printf("Z80 RESET\n");
-	          Z80RESET(&cpu_z80);
-	          kbdstate[FKEY9]=0;
+	            printf("Z80 RESET\n");
+	            Z80RESET(&cpu_z80);
+	            kbdstate[FKEY9]=0;
 	        }  
 		
 	}
